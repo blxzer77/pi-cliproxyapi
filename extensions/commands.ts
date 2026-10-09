@@ -6,7 +6,7 @@
  */
 
 import { writeFileSync } from "node:fs";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { cachePath } from "./cache.ts";
 import {
 	hasStoredLogin,
@@ -62,10 +62,12 @@ export interface CommandContext {
 	pauseMode: PauseController;
 	usage: UsageReporter;
 	defaultBaseUrl: string;
+	/** Redraw the footer labels (Fast, paused); commands call it after changing either. */
+	refreshStatus: (ctx: ExtensionContext) => void;
 }
 
 export function registerCommands(context: CommandContext): void {
-	const { pi, agentDir, providerId, providerName, catalog, fastMode, pauseMode, usage } = context;
+	const { pi, agentDir, providerId, providerName, catalog, fastMode, pauseMode, usage, refreshStatus } = context;
 
 	pi.registerCommand("cpa-refresh", {
 		description: "Force refresh the CLIProxyAPI model catalog.",
@@ -82,6 +84,7 @@ export function registerCommands(context: CommandContext): void {
 			try {
 				const snapshot = await catalog.refresh({ allowNetwork: true, force: true });
 				fastMode.setSupportedModelIds(catalog.fastModelIds());
+				refreshStatus(ctx);
 				registerProvider({
 					pi,
 					agentDir,
@@ -305,6 +308,7 @@ export function registerCommands(context: CommandContext): void {
 					return;
 				}
 				fastMode.setEnabled(enabled);
+				refreshStatus(ctx);
 
 				const model = ctx.model;
 				const supported = model && model.provider === providerId ? fastMode.isModelSupported(model.id) : undefined;
@@ -337,6 +341,7 @@ export function registerCommands(context: CommandContext): void {
 			return;
 		}
 		pauseMode.setEnabled(enabled);
+		refreshStatus(ctx);
 		ctx.ui.notify(
 			enabled ? "Provider requests are paused. Use /continue to resume." : "Provider requests resumed.",
 			"info",

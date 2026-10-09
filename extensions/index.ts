@@ -94,18 +94,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		return next;
 	});
 
-	registerCommands({
-		pi,
-		agentDir,
-		providerId: identity.providerId,
-		providerName: identity.providerName,
-		catalog,
-		fastMode,
-		pauseMode,
-		usage,
-		defaultBaseUrl: defaultBaseUrlInput(agentDir, identity.providerId),
-	});
-
 	// Status labels for Fast and Pause. These use the built-in status row instead of
 	// patching the footer component, so a pi update cannot break them.
 	const refreshStatus = (ctx: ExtensionContext | undefined): void => {
@@ -116,8 +104,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			const model = ctx.model;
 			const labels: string[] = [];
 			if (model && model.provider === identity.providerId) {
-				if (fastMode.isEffectiveFor(model.id)) {
-					labels.push(ctx.ui.theme.fg("warning", "fast"));
+				// A Fast-capable model always says which way the switch is set, so "off" is
+				// distinguishable from "this model has no Fast tier" (which shows nothing).
+				const fastState = fastMode.stateFor(model.id);
+				if (fastState === "on") {
+					labels.push(ctx.ui.theme.fg("warning", "fast on"));
+				} else if (fastState === "off") {
+					labels.push(ctx.ui.theme.fg("dim", "fast off"));
 				}
 				if (pauseMode.isEnabled()) {
 					labels.push(ctx.ui.theme.fg("warning", "paused"));
@@ -132,6 +125,21 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			}
 		}
 	};
+
+	// Commands redraw the labels themselves after they flip a switch; otherwise the
+	// footer would stay stale until the next model change.
+	registerCommands({
+		pi,
+		agentDir,
+		providerId: identity.providerId,
+		providerName: identity.providerName,
+		catalog,
+		fastMode,
+		pauseMode,
+		usage,
+		defaultBaseUrl: defaultBaseUrlInput(agentDir, identity.providerId),
+		refreshStatus,
+	});
 
 	pi.on("model_select", (_event, ctx) => refreshStatus(ctx));
 	pi.on("session_start", async (_event, ctx) => {

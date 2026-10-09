@@ -47,6 +47,17 @@ export class FastModeController {
 		return this.supported.has(modelId.trim().toLowerCase());
 	}
 
+	/**
+	 * What the footer should say about Fast for this model: `on` or `off` when the
+	 * model has a priority tier, `undefined` when it has none (nothing to show).
+	 */
+	stateFor(modelId: string): "on" | "off" | undefined {
+		if (!this.isModelSupported(modelId)) {
+			return undefined;
+		}
+		return this.enabled ? "on" : "off";
+	}
+
 	/** Whether Fast changes the wire request for this model right now. */
 	isEffectiveFor(modelId: string): boolean {
 		return this.enabled && this.isModelSupported(modelId);
