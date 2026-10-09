@@ -209,7 +209,7 @@ It trades the Codex WebSocket transport away for the Responses transport. Verifi
 
 ## Status
 
-Published as `@blxzer77/pi-cliproxyapi@0.1.0` on GitHub Packages, with CI on Node 22.19.0 and 24.x. Usable and covered by 120 tests, but young: the overrides schema and the catalog cache schema can still change, and a cache version mismatch discards the file, costing one refresh.
+Published as `@blxzer77/pi-cliproxyapi@0.1.1` on GitHub Packages, with CI on Node 22.19.0 and 24.x. Usable and covered by 120 tests, but young: the overrides schema and the catalog cache schema can still change, and a cache version mismatch discards the file, costing one refresh.
 
 Requirements: pi `>=1.0.0`, Node `>=22.19.0`.
 

@@ -1,6 +1,6 @@
 {
 	"name": "@blxzer77/pi-cliproxyapi",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Pi provider for CLIProxyAPI: dynamic catalog, declarative model overrides, pinned models, exact usage and cost, Fast/Pause control",
 	"type": "module",
 	"keywords": [
