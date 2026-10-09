@@ -6,22 +6,27 @@ It discovers models from the proxy, lets you correct the metadata the proxy repo
 
 ## Install
 
+From a local checkout — no registry or token needed, and always current:
+
+```bash
+pi install /absolute/path/to/pi-cliproxyapi
+
+# or for a single run
+pi -e /absolute/path/to/pi-cliproxyapi
+```
+
+From [GitHub Packages](https://github.com/blxzer77/pi-cliproxyapi/pkgs/npm/pi-cliproxyapi):
+
 ```bash
 pi install npm:@blxzer77/pi-cliproxyapi
 ```
 
-Installing from GitHub Packages needs a registry entry and a token with `read:packages`:
+GitHub Packages requires a token even for a public package, so this path needs a registry entry and a token with `read:packages`:
 
 ```ini
-# .npmrc
+# ~/.npmrc
 @blxzer77:registry=https://npm.pkg.github.com
 //npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
-```
-
-For local development, load the checkout directly:
-
-```bash
-pi -e /path/to/pi-cliproxyapi
 ```
 
 ## Configure

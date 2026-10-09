@@ -10,9 +10,17 @@
 		"provider"
 	],
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/blxzer77/pi-cliproxyapi.git"
+	},
+	"homepage": "https://github.com/blxzer77/pi-cliproxyapi#readme",
+	"bugs": {
+		"url": "https://github.com/blxzer77/pi-cliproxyapi/issues"
+	},
 	"publishConfig": {
 		"registry": "https://npm.pkg.github.com",
-		"access": "restricted"
+		"access": "public"
 	},
 	"engines": {
 		"node": ">=22.19.0"

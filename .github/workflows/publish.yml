@@ -1,0 +1,48 @@
+name: Publish
+
+# Manual only. GitHub Packages accepts the workflow's own GITHUB_TOKEN, so no
+# repository secret is needed; the job just needs packages: write.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Pack and validate without publishing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          registry-url: https://npm.pkg.github.com
+          scope: "@blxzer77"
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Quality gate
+        run: npm run check
+
+      - name: Pack
+        if: ${{ inputs.dry_run }}
+        run: npm publish --dry-run
+
+      - name: Publish to GitHub Packages
+        if: ${{ !inputs.dry_run }}
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        if: ${{ !inputs.dry_run }}
+        run: echo "Published $(node -p "require('./package.json').name")@$(node -p "require('./package.json').version")"
