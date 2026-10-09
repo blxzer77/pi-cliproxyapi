@@ -1,0 +1,49 @@
+{
+	"name": "@blxzer77/pi-cliproxyapi",
+	"version": "0.1.0",
+	"description": "Pi provider for CLIProxyAPI: dynamic catalog, declarative model overrides, pinned models, exact usage and cost, Fast/Pause control",
+	"type": "module",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"cliproxyapi",
+		"provider"
+	],
+	"license": "MIT",
+	"publishConfig": {
+		"registry": "https://npm.pkg.github.com",
+		"access": "restricted"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"pi": {
+		"extensions": [
+			"./extensions/index.ts"
+		]
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"format": "biome check --write .",
+		"test": "vitest run",
+		"check": "npm run typecheck && npm run lint && npm run test"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": ">=1.0.0",
+		"@earendil-works/pi-coding-agent": ">=1.0.0"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.3",
+		"@earendil-works/pi-ai": "1.0.2",
+		"@earendil-works/pi-coding-agent": "1.0.2",
+		"@types/node": "^24.0.0",
+		"typescript": "6.0.3",
+		"vitest": "4.1.9"
+	},
+	"files": [
+		"extensions",
+		"README.md",
+		"LICENSE"
+	]
+}
