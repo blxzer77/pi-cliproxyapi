@@ -100,7 +100,7 @@ const FAMILY_PREFERENCES: Array<{ pattern: RegExp; providers: string[] }> = [
 ];
 
 /** Known proxy-only ids whose billable base model differs from the id. */
-export const PRICE_ALIASES: Record<string, string[]> = {
+const PRICE_ALIASES: Record<string, string[]> = {
 	"gemini-pro-agent": ["gemini-3.1-pro-preview"],
 	"gemini-3.1-pro-low": ["gemini-3.1-pro-preview"],
 	"gemini-3.6-flash-high": ["gemini-3.6-flash"],
@@ -108,11 +108,6 @@ export const PRICE_ALIASES: Record<string, string[]> = {
 	"grok-composer-2.5-fast": ["grok-4.3"],
 	"grok-3-mini": ["xai/grok-3-mini"],
 };
-
-/** Cost overrides belong to the overrides file; aliases are the shared fallback. */
-export function registerPriceAlias(modelId: string, targets: string[]): void {
-	PRICE_ALIASES[modelId.trim().toLowerCase()] = targets;
-}
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
@@ -247,12 +242,12 @@ export function modelsDevCachePath(agentDir: string): string {
 	return join(agentDir, "tmp", "models-dev-cache.json");
 }
 
-interface ModelsDevCacheFile {
+export interface ModelsDevCacheFile {
 	timestamp: number;
 	providers: Record<string, unknown>;
 }
 
-function readCache(path: string): ModelsDevCacheFile | undefined {
+function readCacheFile(path: string): ModelsDevCacheFile | undefined {
 	try {
 		const parsed = asRecord(JSON.parse(readFileSync(path, "utf8")));
 		if (!parsed || typeof parsed.timestamp !== "number" || !Number.isFinite(parsed.timestamp)) {
@@ -268,7 +263,7 @@ function readCache(path: string): ModelsDevCacheFile | undefined {
 	}
 }
 
-function writeCache(path: string, providers: Record<string, unknown>): void {
+function writeCacheFile(path: string, providers: Record<string, unknown>): void {
 	try {
 		mkdirSync(dirname(path), { recursive: true });
 		writeFileSync(path, JSON.stringify({ timestamp: Date.now(), providers } satisfies ModelsDevCacheFile), "utf8");
@@ -278,22 +273,29 @@ function writeCache(path: string, providers: Record<string, unknown>): void {
 }
 
 /**
- * Load the models.dev cost catalog, preferring a fresh on-disk cache.
+ * Read the on-disk models.dev cache without building the catalog or touching the
+ * network, so the caller decides how fresh the timestamp has to be.
+ */
+export function readModelsDevCache(agentDir: string): ModelsDevCacheFile | undefined {
+	return readCacheFile(modelsDevCachePath(agentDir));
+}
+
+/** Whether a cache timestamp is still inside the models.dev TTL. */
+export function isModelsDevCacheFresh(timestamp: number, now = Date.now()): boolean {
+	return now - timestamp < MODELS_DEV_CACHE_TTL_MS;
+}
+
+/**
+ * Fetch a fresh models.dev document and cache it.
  *
- * A stale cache is still used when the refresh fails, so pricing degrades to
+ * Falls back to the on-disk copy when the fetch fails, so pricing degrades to
  * slightly old rates rather than disappearing.
  */
-export async function loadCostCatalog(
+export async function fetchModelsDevCatalog(
 	agentDir: string,
-	options: { forceRefresh?: boolean; signal?: AbortSignal } = {},
-): Promise<CostCatalog> {
-	const path = modelsDevCachePath(agentDir);
-	const cached = readCache(path);
-
-	if (!options.forceRefresh && cached && Date.now() - cached.timestamp < MODELS_DEV_CACHE_TTL_MS) {
-		return buildCostCatalog(cached.providers);
-	}
-
+	options: { signal?: AbortSignal } = {},
+): Promise<ModelsDevCacheFile | undefined> {
+	const cached = readModelsDevCache(agentDir);
 	const timeout = AbortSignal.timeout(MODELS_DEV_FETCH_TIMEOUT_MS);
 	const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
 	try {
@@ -301,15 +303,14 @@ export async function loadCostCatalog(
 		if (response.ok) {
 			const providers = asRecord(await response.json());
 			if (providers && isUsableProviderMap(providers)) {
-				writeCache(path, providers);
-				return buildCostCatalog(providers);
+				writeCacheFile(modelsDevCachePath(agentDir), providers);
+				return { timestamp: Date.now(), providers };
 			}
 		}
 	} catch (error) {
 		log.debug("models.dev refresh failed", error instanceof Error ? error.message : String(error));
 	}
-
-	return cached ? buildCostCatalog(cached.providers) : emptyCostCatalog();
+	return cached;
 }
 
 function cloneCost(cost: Cost): Cost {

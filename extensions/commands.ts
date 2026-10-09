@@ -5,7 +5,6 @@
  * for. The `/cpa-*` commands expose the catalog, overrides and diagnostics.
  */
 
-import { writeFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { cachePath } from "./cache.ts";
 import {
@@ -19,7 +18,7 @@ import {
 import type { FastModeController } from "./fast.ts";
 import { persistFastPreference } from "./fast.ts";
 import { errorMessage, log } from "./log.ts";
-import { buildStarterOverrides, loadOverrides } from "./overrides.ts";
+import { buildStarterOverrides, loadOverrides, saveOverridesFile, updateModelOverride } from "./overrides.ts";
 import type { PauseController } from "./pause.ts";
 import { persistPausePreference } from "./pause.ts";
 import type { CatalogController } from "./provider.ts";
@@ -52,6 +51,42 @@ function formatRelative(timestamp: number | undefined): string {
 	return `${Math.round(seconds / 86400)}d ago`;
 }
 
+/** Which layer of the overrides file decides a model's settings. */
+function describeOverrideSource(overrides: ReturnType<typeof loadOverrides>, id: string): string {
+	if (overrides.models.has(id.trim().toLowerCase())) {
+		return `exact entry (${overrides.path})`;
+	}
+	const matching = overrides.patterns.filter((pattern) => pattern.regex.test(id));
+	const last = matching.at(-1);
+	if (!last) {
+		return "none (catalog values)";
+	}
+	return `pattern /${last.source.match}/ (last of ${matching.length} matching)`;
+}
+
+/** Compact per-million-token rate summary for one model. */
+function formatCost(cost: { input: number; output: number; cacheRead: number; cacheWrite: number }): string {
+	const parts = [`in $${cost.input}`, `out $${cost.output}`];
+	if (cost.cacheRead > 0) {
+		parts.push(`cache r $${cost.cacheRead}`);
+	}
+	if (cost.cacheWrite > 0) {
+		parts.push(`cache w $${cost.cacheWrite}`);
+	}
+	return `${parts.join("  ")}  /1M tok`;
+}
+
+/** The pi levels a user can actually select, in picker order. */
+function formatSelectableLevels(thinkingLevelMap: Record<string, string | null> | undefined): string {
+	if (!thinkingLevelMap) {
+		return "not a reasoning model";
+	}
+	const selectable = Object.entries(thinkingLevelMap)
+		.filter(([, value]) => value !== null)
+		.map(([level]) => level);
+	return selectable.length > 0 ? selectable.join(", ") : "none";
+}
+
 export interface CommandContext {
 	pi: ExtensionAPI;
 	agentDir: string;
@@ -69,58 +104,153 @@ export interface CommandContext {
 export function registerCommands(context: CommandContext): void {
 	const { pi, agentDir, providerId, providerName, catalog, fastMode, pauseMode, usage, refreshStatus } = context;
 
+	/**
+	 * Force a catalog refresh and re-register the provider, so an overrides edit
+	 * shows up in the picker immediately. Never throws.
+	 */
+	const refreshAndRegister = async (ctx: ExtensionCommandContext): Promise<{ error?: string }> => {
+		const connection = resolveConnection(agentDir, providerId);
+		if (!connection) {
+			return { error: `CLIProxyAPI is not configured. Run /login ${providerName}.` };
+		}
+		try {
+			const snapshot = await catalog.refresh({ allowNetwork: true, force: true });
+			fastMode.setSupportedModelIds(catalog.fastModelIds());
+			registerProvider({
+				pi,
+				agentDir,
+				providerId,
+				providerName,
+				baseUrlInput: connection.baseUrlInput,
+				apiKey: connection.apiKey,
+				catalog,
+			});
+			flushNotices(catalog, ctx);
+			refreshStatus(ctx);
+			return { error: snapshot.error };
+		} catch (error) {
+			return { error: errorMessage(error) };
+		}
+	};
+
+	/**
+	 * Toggle one boolean override field for a model id, or for the current model when
+	 * no id is given. The overrides file is edited in place; everything else it holds
+	 * is preserved.
+	 */
+	const toggleModelFlag = async (
+		field: "pin" | "hidden" | "show",
+		args: string,
+		ctx: ExtensionCommandContext,
+	): Promise<void> => {
+		const requested = args.trim().toLowerCase();
+		const currentId = ctx.model?.provider === providerId ? ctx.model.id.toLowerCase() : undefined;
+		const id = requested || currentId;
+		if (!id) {
+			ctx.ui.notify(`Usage: /cpa-${field} [model-id]  (no id = the current model)`, "error");
+			return;
+		}
+		const model = catalog.findModel(id);
+		const resolvedId = model?.meta.id ?? id;
+		const overrides = loadOverrides(agentDir);
+		const exact = overrides.models.get(id)?.[field];
+		const fromPattern = overrides.patterns.some(
+			(pattern) => pattern.regex.test(id) && pattern.source[field] === true,
+		);
+		const enabled = exact === true || (exact === undefined && fromPattern);
+		// Switching off a flag a pattern provides needs an explicit false; switching off
+		// an exact entry can simply delete it.
+		const next: boolean | null = !enabled ? true : exact === true ? null : false;
+		try {
+			updateModelOverride(agentDir, resolvedId, field, next);
+		} catch (error) {
+			ctx.ui.notify(`Failed to update the overrides file: ${errorMessage(error)}`, "error");
+			return;
+		}
+		ctx.ui.notify(`${resolvedId}: ${field} ${next === true ? "on" : "off"} (${overrides.path}).`, "info");
+		if (!model) {
+			ctx.ui.notify(`${resolvedId} is not in the current catalog; the change applies when it appears.`, "warning");
+		}
+		const result = await refreshAndRegister(ctx);
+		if (result.error) {
+			ctx.ui.notify(result.error, "error");
+		}
+	};
+
 	pi.registerCommand("cpa-refresh", {
 		description: "Force refresh the CLIProxyAPI model catalog.",
 		handler: async (args, ctx) => {
 			if (!requireNoArgs(args, "cpa-refresh", ctx)) {
 				return;
 			}
-			const connection = resolveConnection(agentDir, providerId);
-			if (!connection) {
-				ctx.ui.notify(`CLIProxyAPI is not configured. Run /login ${providerName}.`, "error");
+			ctx.ui.notify("Refreshing CLIProxyAPI models...", "info");
+			const result = await refreshAndRegister(ctx);
+			if (result.error) {
+				ctx.ui.notify(`Refresh failed: ${result.error}. Keeping the previous list.`, "warning");
 				return;
 			}
-			ctx.ui.notify("Refreshing CLIProxyAPI models...", "info");
-			try {
-				const snapshot = await catalog.refresh({ allowNetwork: true, force: true });
-				fastMode.setSupportedModelIds(catalog.fastModelIds());
-				refreshStatus(ctx);
-				registerProvider({
-					pi,
-					agentDir,
-					providerId,
-					providerName,
-					baseUrlInput: connection.baseUrlInput,
-					apiKey: connection.apiKey,
-					catalog,
-				});
-				flushNotices(catalog, ctx);
-				if (snapshot.error) {
-					ctx.ui.notify(`Refresh failed: ${snapshot.error}. Keeping the previous list.`, "warning");
-					return;
-				}
-				const pinned = snapshot.models.filter((model) => model.meta.pinned).length;
-				const unlisted = snapshot.models.filter((model) => model.meta.listing === "unlisted").length;
-				const suffix = [pinned > 0 ? `${pinned} pinned` : "", unlisted > 0 ? `${unlisted} unlisted` : ""].filter(
-					Boolean,
-				);
-				ctx.ui.notify(
-					`Refreshed ${snapshot.models.length} model(s)${suffix.length > 0 ? ` (${suffix.join(", ")})` : ""}.`,
-					"info",
-				);
-			} catch (error) {
-				ctx.ui.notify(`Failed to refresh models: ${errorMessage(error)}`, "error");
-			}
+			const snapshot = catalog.getSnapshot();
+			const pinned = snapshot.models.filter((model) => model.meta.pinned).length;
+			const unlisted = snapshot.models.filter((model) => model.meta.listing === "unlisted").length;
+			const suffix = [pinned > 0 ? `${pinned} pinned` : "", unlisted > 0 ? `${unlisted} unlisted` : ""].filter(
+				Boolean,
+			);
+			ctx.ui.notify(
+				`Refreshed ${snapshot.models.length} model(s)${suffix.length > 0 ? ` (${suffix.join(", ")})` : ""}.`,
+				"info",
+			);
 		},
+	});
+
+	pi.registerCommand("cpa-pin", {
+		description: "Toggle the pin for a model, or the current model with no argument.",
+		handler: async (args, ctx) => toggleModelFlag("pin", args, ctx),
+	});
+
+	pi.registerCommand("cpa-hide", {
+		description: "Toggle visibility for a model, or the current model with no argument.",
+		handler: async (args, ctx) => toggleModelFlag("hidden", args, ctx),
+	});
+
+	pi.registerCommand("cpa-show", {
+		description: "Surface a model the catalog hides, or the current model with no argument.",
+		handler: async (args, ctx) => toggleModelFlag("show", args, ctx),
 	});
 
 	pi.registerCommand("cpa-models", {
 		description: "List CLIProxyAPI models with their resolved limits and overrides.",
 		handler: async (args, ctx) => {
-			if (!requireNoArgs(args, "cpa-models", ctx)) {
+			const requested = args.trim();
+			const models = catalog.getModels();
+			if (requested) {
+				const model = catalog.findModel(requested);
+				if (!model) {
+					ctx.ui.notify(`No model ${requested} in the catalog. Run /cpa-models for the list.`, "error");
+					return;
+				}
+				const overrides = loadOverrides(agentDir);
+				const catalogMeta = model.meta.catalog;
+				const lines = [
+					`id            ${model.meta.id}`,
+					`name          ${model.config.name}`,
+					`state         ${model.meta.listing}${model.meta.unlistedSince ? ` since ${formatRelative(model.meta.unlistedSince)}` : ""}`,
+					`context       ${formatTokens(model.config.contextWindow)}${catalogMeta.contextWindow && catalogMeta.contextWindow !== model.config.contextWindow ? ` (catalog ${formatTokens(catalogMeta.contextWindow)})` : ""}${catalogMeta.maxContextWindow ? `, max_context_window ${formatTokens(catalogMeta.maxContextWindow)}` : ""}`,
+					`max tokens    ${formatTokens(model.config.maxTokens)}${catalogMeta.maxTokens && catalogMeta.maxTokens !== model.config.maxTokens ? ` (catalog ${formatTokens(catalogMeta.maxTokens)})` : ""}`,
+					`input         ${model.config.input.join(", ")}`,
+					`reasoning     ${model.config.reasoning ? "yes" : "no"}`,
+					`  catalog     ${catalogMeta.reasoningLevels.length > 0 ? catalogMeta.reasoningLevels.join(", ") : "(none advertised)"}`,
+					`  selectable  ${formatSelectableLevels(model.config.thinkingLevelMap)}`,
+					`fast          ${model.meta.fast ? "priority tier advertised" : "no priority tier"}`,
+					`cost          ${model.meta.costSource}  ${formatCost(model.config.cost)}`,
+					`override      ${describeOverrideSource(overrides, model.meta.id)}`,
+				];
+				const extras = Object.entries(model.meta.extras);
+				if (extras.length > 0) {
+					lines.push(`catalog       ${extras.map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(" ")}`);
+				}
+				ctx.ui.notify(lines.join("\n"), "info");
 				return;
 			}
-			const models = catalog.getModels();
 			if (models.length === 0) {
 				ctx.ui.notify("No CLIProxyAPI models are registered. Run /cpa-refresh.", "warning");
 				return;
@@ -143,10 +273,12 @@ export function registerCommands(context: CommandContext): void {
 						catalogContext && catalogContext !== model.config.contextWindow
 							? ` (catalog ${formatTokens(catalogContext)})`
 							: "";
-					return `${overridden} ${model.meta.id.padEnd(24)} ${formatTokens(model.config.contextWindow).padStart(7)}${drift}  out ${formatTokens(model.config.maxTokens)}  ${flags}`;
+					const levels = model.meta.catalog.reasoningLevels;
+					const ladder = levels.length > 0 ? `  lvl ${levels.join(",")}` : "";
+					return `${overridden} ${model.meta.id.padEnd(24)} ${formatTokens(model.config.contextWindow).padStart(7)}${drift}  out ${formatTokens(model.config.maxTokens)}  ${flags}${ladder}`;
 				});
 			ctx.ui.notify(
-				`${models.length} model(s), ${formatRelative(catalog.getFetchedAt())}:\n${lines.join("\n")}\n* = an override file entry applies`,
+				`${models.length} model(s), ${formatRelative(catalog.getFetchedAt())}:\n${lines.join("\n")}\n* = an override file entry applies; /cpa-models <id> for one model in detail`,
 				"info",
 			);
 		},
@@ -195,6 +327,12 @@ export function registerCommands(context: CommandContext): void {
 			if (snapshot.error) {
 				lines.push(`last error     ${snapshot.error}`);
 			}
+			if (usage.lastResponseError) {
+				const trace = usage.lastResponseError.traceId ? ` trace ${usage.lastResponseError.traceId}` : "";
+				lines.push(
+					`last response ${usage.lastResponseError.status}${trace} (${formatRelative(usage.lastResponseError.at)})`,
+				);
+			}
 			if (usage.lastTraceId) {
 				lines.push(`last trace     ${usage.lastTraceId}`);
 			}
@@ -208,7 +346,14 @@ export function registerCommands(context: CommandContext): void {
 	pi.registerCommand("cpa-usage", {
 		description: "Show token usage and cost for this session.",
 		handler: async (args, ctx) => {
-			if (!requireNoArgs(args, "cpa-usage", ctx)) {
+			const trimmed = args.trim();
+			if (trimmed === "reset") {
+				usage.resetSessionUsage();
+				ctx.ui.notify("Session usage totals reset.", "info");
+				return;
+			}
+			if (trimmed) {
+				ctx.ui.notify("Usage: /cpa-usage [reset]", "error");
 				return;
 			}
 			const session = usage.sessionUsage;
@@ -221,10 +366,13 @@ export function registerCommands(context: CommandContext): void {
 			if (usage.lastRun) {
 				const last = usage.lastRun;
 				lines.push(
-					`last run ${formatElapsed(last.elapsedMs / 1000)}  out ${formatTokens(last.output)}  in ${formatTokens(last.input)}${last.tps !== undefined ? `  ${last.tps.toFixed(1)} tok/s` : ""}`,
+					`last run ${last.fast ? "fast  " : ""}${formatElapsed(last.elapsedMs / 1000)}  out ${formatTokens(last.output)}  in ${formatTokens(last.input)}${last.tps !== undefined ? `  ${last.tps.toFixed(1)} tok/s` : ""}`,
 				);
 			}
 			lines.push("Token counts come from CLIProxyAPI; cost is estimated and is not a bill.");
+			if (usage.lastRun?.fast) {
+				lines.push("The last run used Fast, which bills above the catalog rates shown here.");
+			}
 			ctx.ui.notify(lines.join("\n"), "info");
 		},
 	});
@@ -276,9 +424,9 @@ export function registerCommands(context: CommandContext): void {
 			}
 			try {
 				const starter = buildStarterOverrides(entries);
-				writeFileSync(path, `${JSON.stringify(starter, null, 2)}\n`, "utf8");
+				const written = saveOverridesFile(agentDir, starter);
 				ctx.ui.notify(
-					`Wrote ${path} with ${entries.length} pinned model(s). Edit it to change limits, thinking levels or prices; changes apply on the next refresh.`,
+					`Wrote ${written} with ${entries.length} pinned model(s). Edit it to change limits, thinking levels or prices; changes apply on the next refresh.`,
 					"info",
 				);
 			} catch (error) {

@@ -70,6 +70,7 @@ Environment overrides, in resolution order **env → config file → `/login` cr
 | `CLIPROXYAPI_PROVIDER_NAME` | `providerName` |
 | `CLIPROXYAPI_FAST` / `CLIPROXYAPI_PAUSE` | `fast` / `pause` |
 | `CLIPROXYAPI_OVERRIDES_FILE` | `overridesFile` |
+| `CLIPROXYAPI_CATALOG_MIN_REFRESH_MS` | Minimum spacing between catalog fetches (default 15000; `0` disables the throttle). `/cpa-refresh` and login always fetch. |
 | `CLIPROXYAPI_DEBUG` | `1` enables debug logging |
 | `CLIPROXYAPI_QUIET` | `1` silences all non-warning logging |
 
@@ -107,7 +108,7 @@ This is the reason the provider exists. The catalog at `GET /v1/models?client_ve
 }
 ```
 
-Precedence is `models[id]` → last matching entry of `patterns` → catalog value. Matching is case-insensitive. `/cpa-overrides init` writes a starter file that pins every currently listed model.
+Precedence is `models[id]` → last matching entry of `patterns` → catalog value. Matching is case-insensitive. `/cpa-overrides init` writes a starter file that pins every currently listed model, and `/cpa-pin`, `/cpa-hide` and `/cpa-show` edit single entries in place — everything else the file holds is preserved.
 
 ### `defaults`
 
@@ -153,31 +154,40 @@ A model missing from an HTTP 200 catalog is either a real catalog change or a tr
 
 Pins and `unlistedSince` are persisted to `~/.pi/agent/cliproxyapi-catalog.json`, so pinning works across restarts, including when the very first fetch of a new process no longer lists the model. That file also lets the picker survive a restart while the proxy is briefly unreachable. It holds no credentials.
 
-`/cpa-models` shows the state, and marks the catalog value when it differs from the resolved one. `/cpa-refresh` forces a fetch.
+`/cpa-models` shows the state, the thinking ladder and the cost source, and marks the catalog value when it differs from the resolved one; `/cpa-models <id>` shows one model in full detail. `/cpa-refresh` forces a fetch. A model that *appears* in the catalog produces one notice, the same way a dropped in-use model does. A model that comes back after a drop is `listed` again, not `unlisted`.
+
+Refreshes are throttled to one per `CLIPROXYAPI_CATALOG_MIN_REFRESH_MS` (default 15s): extension load, pi's own model refresh and `session_start` can all fire within seconds of each other, and `/cpa-refresh` and login always force a fetch regardless.
 
 ## Cost and usage
 
 CLIProxyAPI reports exact token counts per response, so accounting uses those. Rates come from models.dev, cached for 24 hours, and never guess a price: when several providers publish conflicting rates for the same id, the lookup returns zero instead of picking one arbitrarily.
 
+Pricing is fetched in the background: a cold models.dev cache never delays startup or the first render. The picker appears immediately with the cached (or no) rates, and the models are repriced in place once the document lands.
+
 Cost is an **estimate**. It reflects catalog list prices, not the proxy's own markup or your bill.
 
 Throughput is output tokens over the generation window — first upstream event to settle — and never `output / total_latency`, which would fold in queueing and tool time. Time spent paused is excluded.
 
-- A summary appears when a run settles: `1m 4s • ttft 0.82s • out 1.2k • in 34.5k • cache r 512.0k • 18.4 tok/s • ~$0.0142`
-- `/cpa-usage` shows session totals and the last run.
-- The footer shows `fast on` or `fast off` on a Fast-capable model, and `paused` while requests are gated. `/fast`, `/pause` and `/continue` redraw it immediately.
+- A summary appears when a run settles: `1m 4s • ttft 0.82s • out 1.2k • in 34.5k • cache r 512.0k • 18.4 tok/s • ~$0.0142`. A run that used Fast starts with a `fast` marker, because priority processing bills above the rates the estimate used.
+- `/cpa-usage` shows session totals and the last run; `/cpa-usage reset` zeroes the session totals.
+- The footer shows `fast on` or `fast off` on a Fast-capable model, and `paused` while this provider's requests are gated. `/fast`, `/pause` and `/continue` redraw it immediately.
 
 ## Commands
 
 | Command | Purpose |
 |---|---|
 | `/cpa-refresh` | Force a catalog fetch and re-register models. |
-| `/cpa-models` | List models with limits, state, Fast capability and cost source. |
-| `/cpa-doctor` | Show configuration, credential source, catalog state, override problems and the last CPA trace id. |
-| `/cpa-usage` | Session and last-run token usage. |
+| `/cpa-models` | List models with limits, state, Fast capability and cost source. `/cpa-models <id>` shows one model in detail. |
+| `/cpa-pin [id]` | Toggle the pin for a model, or the current model with no argument. Pinned models never leave the catalog. |
+| `/cpa-hide [id]` | Toggle visibility for a model, or the current model. |
+| `/cpa-show [id]` | Surface a model the catalog hides. |
+| `/cpa-doctor` | Show configuration, credential source, catalog state, override problems, the last failed response and the last CPA trace id. |
+| `/cpa-usage` | Session and last-run token usage; `reset` zeroes the session totals. |
 | `/cpa-overrides` | Show the overrides file, or `init` to seed one. |
 | `/fast` | Toggle OpenAI priority processing. |
 | `/pause`, `/continue` | Gate provider requests, persisted across restarts. |
+
+`/cpa-pin`, `/cpa-hide` and `/cpa-show` edit `cliproxyapi-overrides.json` in place, preserving everything else it holds, then refresh and re-register so the picker reflects the change immediately. Switching a flag *off* removes it, unless the flag came from a `patterns` entry — then an explicit `false` is written, because the pattern would otherwise keep winning.
 
 Fast is off by default: priority processing bills at a higher rate. It only changes the request for models whose catalog entry advertises a non-empty `service_tiers` array; the other models are left untouched, show no Fast label, and `/fast` says so.
 
@@ -209,7 +219,7 @@ It trades the Codex WebSocket transport away for the Responses transport. Verifi
 
 ## Status
 
-Published as `@blxzer77/pi-cliproxyapi@0.1.1` on GitHub Packages, with CI on Node 22.19.0 and 24.x. Usable and covered by 120 tests, but young: the overrides schema and the catalog cache schema can still change, and a cache version mismatch discards the file, costing one refresh.
+Published as `@blxzer77/pi-cliproxyapi@0.1.1` on GitHub Packages, with CI on Node 22.19.0 and 24.x. Usable and covered by 158 tests, but young: the overrides schema and the catalog cache schema can still change, and a cache version mismatch discards the file, costing one refresh.
 
 Requirements: pi `>=1.0.0`, Node `>=22.19.0`.
 

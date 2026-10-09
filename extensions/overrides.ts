@@ -15,7 +15,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { configPath, firstNonEmpty, loadConfig, overridesPath, writeJsonAtomic } from "./config.ts";
+import { loadConfig, overridesPath, writeJsonAtomic } from "./config.ts";
 import { log } from "./log.ts";
 import type { Cost, CostTier } from "./pricing.ts";
 
@@ -228,6 +228,25 @@ function parseThinkingLevelMap(value: unknown, field: string, problems: string[]
 	return Object.keys(map).length > 0 ? map : undefined;
 }
 
+function parseHeaderMap(value: unknown, field: string, problems: string[]): Record<string, string> | undefined {
+	const source = asRecord(value);
+	if (!source) {
+		if (value !== undefined) {
+			problems.push(`${field} must be an object`);
+		}
+		return undefined;
+	}
+	const headers: Record<string, string> = {};
+	for (const [key, raw] of Object.entries(source)) {
+		if (typeof raw !== "string" || !raw.trim()) {
+			problems.push(`${field}.${key} must be a non-empty string`);
+			continue;
+		}
+		headers[key] = raw;
+	}
+	return Object.keys(headers).length > 0 ? headers : undefined;
+}
+
 function parseModelOverride(raw: unknown, prefix: string, problems: string[]): ModelOverride | undefined {
 	const source = asRecord(raw);
 	if (!source) {
@@ -247,7 +266,7 @@ function parseModelOverride(raw: unknown, prefix: string, problems: string[]): M
 		pin: optionalBoolean(source.pin, `${prefix}.pin`, problems),
 		hidden: optionalBoolean(source.hidden, `${prefix}.hidden`, problems),
 		show: optionalBoolean(source.show, `${prefix}.show`, problems),
-		headers: asRecord(source.headers) as Record<string, string> | undefined,
+		headers: parseHeaderMap(source.headers, `${prefix}.headers`, problems),
 		samplingParams: asRecord(source.samplingParams),
 	};
 	if (source.input !== undefined) {
@@ -470,10 +489,6 @@ export function resolveOverride(overrides: CompiledOverrides, modelId: string): 
 	return fromPatterns ? mergeOverride(fromPatterns, exact) : exact;
 }
 
-export function isPinned(overrides: CompiledOverrides, modelId: string): boolean {
-	return resolveOverride(overrides, modelId)?.pin === true;
-}
-
 /**
  * Turn a supported-levels list into pi's `thinkingLevelMap`.
  *
@@ -518,23 +533,50 @@ export function buildStarterOverrides(
 	};
 }
 
-/** Persist a rendered overrides file. Returns the path written. */
+/** Persist a rendered overrides file atomically. Returns the path written. */
 export function saveOverridesFile(agentDir: string, file: OverridesFile): string {
 	const path = overridesPath(agentDir, loadConfig(agentDir));
 	writeJsonAtomic(path, file);
 	return path;
 }
 
-/** Absolute path of the overrides file, for UI and diagnostics. */
-export function describeOverrideSources(agentDir: string): { config: string; overrides: string } {
-	return {
-		config: (() => {
-			try {
-				return configPath(agentDir);
-			} catch {
-				return "";
-			}
-		})(),
-		overrides: firstNonEmpty(loadOverrides(agentDir).path) ?? "",
-	};
+/**
+ * Set or clear one boolean field of one model's override entry, editing the file in
+ * place. Every other key, including entries this module does not know about, is
+ * preserved. Matching is case-insensitive and reuses an existing key's casing.
+ *
+ * `null` deletes the field (back to the catalog or pattern value); `false` writes an
+ * explicit false, which is how a pattern-provided value is switched off.
+ */
+export function updateModelOverride(
+	agentDir: string,
+	modelId: string,
+	field: "pin" | "hidden" | "show",
+	value: boolean | null,
+): string {
+	const path = overridesPath(agentDir, loadConfig(agentDir));
+	let raw: Record<string, unknown> = {};
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			raw = parsed as Record<string, unknown>;
+		}
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+			throw error;
+		}
+	}
+	const models = asRecord(raw.models) ?? {};
+	const existingKey = Object.keys(models).find((key) => key.trim().toLowerCase() === modelId.trim().toLowerCase());
+	const key = existingKey ?? modelId.trim();
+	const entry = asRecord(models[key]) ?? {};
+	if (value === null) {
+		delete entry[field];
+	} else {
+		entry[field] = value;
+	}
+	models[key] = entry;
+	raw.models = models;
+	writeJsonAtomic(path, raw);
+	return path;
 }

@@ -2,6 +2,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { mapCatalog } from "../extensions/catalog.ts";
 import { compileOverrides } from "../extensions/overrides.ts";
+import { PauseController } from "../extensions/pause.ts";
 import { buildCostCatalog, matchCost } from "../extensions/pricing.ts";
 import { normalizeTransientError } from "../extensions/retry.ts";
 import { addMessageUsage, emptyUsageTotals, formatElapsed, formatTokens, UsageReporter } from "../extensions/usage.ts";
@@ -137,6 +138,12 @@ describe("formatting", () => {
 
 	it("clamps a negative elapsed value", () => {
 		expect(formatElapsed(-5)).toBe("0s");
+	});
+
+	it("marks a Fast run so the higher rate is visible next to the price", () => {
+		const reporter = new UsageReporter({ providerId: "cliproxyapi", pauseMode: new PauseController() });
+		expect(reporter.formatSummary(emptyUsageTotals(), 4000, undefined, undefined, true)).toMatch(/^fast • 4s/);
+		expect(reporter.formatSummary(emptyUsageTotals(), 4000)).toMatch(/^4s/);
 	});
 });
 

@@ -1,11 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	buildStarterOverrides,
 	buildThinkingLevelMap,
 	compileOverrides,
 	DEFAULT_UNLISTED_GRACE_MS,
+	loadOverrides,
 	type OverridesFile,
 	resolveOverride,
+	updateModelOverride,
 } from "../extensions/overrides.ts";
 
 describe("compileOverrides", () => {
@@ -189,5 +194,76 @@ describe("buildThinkingLevelMap", () => {
 
 	it("returns undefined for an empty list so the model keeps pi's default", () => {
 		expect(buildThinkingLevelMap([])).toBeUndefined();
+	});
+});
+
+describe("updateModelOverride", () => {
+	let agentDir: string;
+
+	beforeEach(() => {
+		agentDir = mkdtempSync(join(tmpdir(), "cpa-overrides-test-"));
+	});
+
+	afterEach(() => {
+		rmSync(agentDir, { recursive: true, force: true });
+	});
+
+	function readFile(): Record<string, unknown> {
+		return JSON.parse(readFileSync(join(agentDir, "cliproxyapi-overrides.json"), "utf8")) as Record<string, unknown>;
+	}
+
+	function writeFile(value: unknown): void {
+		writeFileSync(join(agentDir, "cliproxyapi-overrides.json"), JSON.stringify(value), "utf8");
+	}
+
+	it("sets a flag and preserves every other key in the file", () => {
+		writeFile({
+			defaults: { unlistedGraceMs: 1000 },
+			models: { "other-model": { contextWindow: 5, maxTokens: 6 } },
+			patterns: [{ match: "^claude-", contextWindow: 7 }],
+			unknownFutureKey: { keep: true },
+		});
+		updateModelOverride(agentDir, "space-bunny", "pin", true);
+		const file = readFile();
+		expect(file.defaults).toEqual({ unlistedGraceMs: 1000 });
+		expect(file.patterns).toEqual([{ match: "^claude-", contextWindow: 7 }]);
+		expect(file.unknownFutureKey).toEqual({ keep: true });
+		expect(file.models).toMatchObject({
+			"other-model": { contextWindow: 5, maxTokens: 6 },
+			"space-bunny": { pin: true },
+		});
+		// The result compiles cleanly, so the edit is a valid overrides file.
+		expect(loadOverrides(agentDir).problems).toEqual([]);
+	});
+
+	it("clearing a flag removes the field but keeps the entry", () => {
+		writeFile({ models: { "space-bunny": { pin: true, contextWindow: 5 } } });
+		updateModelOverride(agentDir, "space-bunny", "pin", null);
+		expect(readFile().models).toEqual({ "space-bunny": { contextWindow: 5 } });
+	});
+
+	it("reuses an existing key's casing instead of adding a duplicate", () => {
+		writeFile({ models: { "GPT-6.1-SOL": { contextWindow: 5 } } });
+		updateModelOverride(agentDir, "gpt-6.1-sol", "hidden", true);
+		expect(readFile().models).toEqual({ "GPT-6.1-SOL": { contextWindow: 5, hidden: true } });
+	});
+
+	it("an explicit false switches off a pattern-provided pin", () => {
+		writeFile({ patterns: [{ match: "^claude-", pin: true }] });
+		expect(resolveOverride(loadOverrides(agentDir), "claude-sonnet-5-5")?.pin).toBe(true);
+		updateModelOverride(agentDir, "claude-sonnet-5-5", "pin", false);
+		expect(resolveOverride(loadOverrides(agentDir), "claude-sonnet-5-5")?.pin).toBe(false);
+		// Other claude models keep the pattern pin.
+		expect(resolveOverride(loadOverrides(agentDir), "claude-opus-5-5")?.pin).toBe(true);
+	});
+
+	it("creates the file when it does not exist yet", () => {
+		updateModelOverride(agentDir, "space-bunny", "hidden", true);
+		expect(readFile()).toEqual({ models: { "space-bunny": { hidden: true } } });
+	});
+
+	it("supports the show flag for catalog-hidden models", () => {
+		updateModelOverride(agentDir, "internal-embed", "show", true);
+		expect(resolveOverride(loadOverrides(agentDir), "internal-embed")?.show).toBe(true);
 	});
 });

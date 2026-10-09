@@ -81,6 +81,8 @@ function isProviderMessage(message: AssistantMessage, providerId: string): boole
 export interface UsageReporterOptions {
 	providerId: string;
 	pauseMode: PauseController;
+	/** Whether Fast is in effect for a model, so the summary can mark priority billing. */
+	isFastEffective?: (model: { provider: string; id: string }) => boolean;
 }
 
 interface RunState {
@@ -93,6 +95,8 @@ interface RunState {
 	headersMs?: number;
 	lastRequestMs?: number;
 	traceId?: string;
+	/** Whether any request in this run carried the priority service tier. */
+	fast: boolean;
 }
 
 export class UsageReporter {
@@ -104,8 +108,10 @@ export class UsageReporter {
 	/** Usage accumulated for the whole session. */
 	readonly sessionUsage: UsageTotals = emptyUsageTotals();
 	/** Last completed run summary, for `/cpa-usage`. */
-	lastRun: (UsageTotals & { elapsedMs: number; ttftMs?: number; tps?: number }) | undefined;
+	lastRun: (UsageTotals & { elapsedMs: number; ttftMs?: number; tps?: number; fast: boolean }) | undefined;
 	lastTraceId: string | undefined;
+	/** Last failed provider response, for `/cpa-doctor`. */
+	lastResponseError: { status: number; traceId?: string; at: number } | undefined;
 
 	constructor(private readonly options: UsageReporterOptions) {}
 
@@ -180,6 +186,7 @@ export class UsageReporter {
 				startedAtMs,
 				pausedAtStartMs: this.options.pauseMode.totalPausedMs(startedAtMs),
 				pausedWhenStarted: this.options.pauseMode.isEnabled(),
+				fast: false,
 			};
 			this.runUsage = emptyUsageTotals();
 			this.statusCtx = ctx;
@@ -200,21 +207,30 @@ export class UsageReporter {
 			this.run.lastRequestMs = Date.now();
 			this.run.firstEventMs = undefined;
 			this.run.headersMs = undefined;
+			if (this.options.isFastEffective?.(model)) {
+				this.run.fast = true;
+			}
 		});
 
 		pi.on("after_provider_response", (event) => {
+			// A failed response is worth recording even outside a tracked run: it is the
+			// first thing /cpa-doctor shows when a request keeps failing.
+			if (event.status >= 400) {
+				const traceId = readHeader(event.headers, "x-cpa-trace-id");
+				this.lastResponseError = { status: event.status, ...(traceId ? { traceId } : {}), at: Date.now() };
+			}
 			if (!this.run) {
 				return;
 			}
 			this.run.headersMs = Date.now();
-			const traceId = readHeader(event.headers, "x-cpa-trace-id");
-			if (traceId) {
-				this.run.traceId = traceId;
-				this.lastTraceId = traceId;
+			const runTraceId = readHeader(event.headers, "x-cpa-trace-id");
+			if (runTraceId) {
+				this.run.traceId = runTraceId;
+				this.lastTraceId = runTraceId;
 			}
 			const retryAfter = readHeader(event.headers, "retry-after");
 			if (retryAfter) {
-				log.debug(`gateway asked to retry after ${retryAfter}s`, { traceId });
+				log.debug(`gateway asked to retry after ${retryAfter}s`, { traceId: runTraceId });
 			}
 		});
 
@@ -257,14 +273,14 @@ export class UsageReporter {
 					: undefined;
 			const tps = UsageReporter.computeTps(this.runUsage.output, settledAtMs, run.firstEventMs);
 
-			this.lastRun = { ...this.runUsage, elapsedMs, ttftMs, tps };
+			this.lastRun = { ...this.runUsage, elapsedMs, ttftMs, tps, fast: run.fast };
 			this.addToSession(this.runUsage);
 
 			if (!isPrimaryUiSession(ctx)) {
 				return;
 			}
 			try {
-				ctx.ui.notify(this.formatSummary(this.runUsage, elapsedMs, ttftMs, tps), "info");
+				ctx.ui.notify(this.formatSummary(this.runUsage, elapsedMs, ttftMs, tps, run.fast), "info");
 			} catch (error) {
 				if (!errorMessage(error).includes("stale")) {
 					log.debug("failed to notify usage", errorMessage(error));
@@ -288,8 +304,14 @@ export class UsageReporter {
 		this.sessionUsage.cost += usage.cost;
 	}
 
-	formatSummary(usage: UsageTotals, elapsedMs: number, ttftMs?: number, tps?: number): string {
-		const parts: string[] = [`${formatElapsed(elapsedMs / 1000)}`];
+	formatSummary(usage: UsageTotals, elapsedMs: number, ttftMs?: number, tps?: number, fast = false): string {
+		const parts: string[] = [];
+		// Fast bills at a higher rate than the catalog rates the cost came from, so the
+		// marker is shown next to the price rather than left implicit.
+		if (fast) {
+			parts.push("fast");
+		}
+		parts.push(`${formatElapsed(elapsedMs / 1000)}`);
 		if (ttftMs !== undefined) {
 			parts.push(`ttft ${(ttftMs / 1000).toFixed(2)}s`);
 		}

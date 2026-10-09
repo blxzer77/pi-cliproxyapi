@@ -5,7 +5,6 @@ import {
 	costHasRates,
 	matchCost,
 	parseModelsDevCost,
-	registerPriceAlias,
 	ZERO_COST,
 } from "../extensions/pricing.ts";
 import { MODELS_DEV_PROVIDERS } from "./fixtures.ts";
@@ -22,9 +21,9 @@ describe("matchCost", () => {
 		expect(matchCost("claude sonnet 5 5", catalog)).toMatchObject({ input: 3, output: 15 });
 	});
 
-	it("resolves a proxy-only id through a registered alias", () => {
-		registerPriceAlias("my-relay-gpt", ["gpt-6.1-sol"]);
-		expect(matchCost("my-relay-gpt", catalog)).toMatchObject({ input: 1.25, output: 10 });
+	it("resolves a proxy-only id through the built-in alias table", () => {
+		// `gemini-pro-agent` is billed as `gemini-3.1-pro-preview`.
+		expect(matchCost("gemini-pro-agent", catalog)).toMatchObject({ input: 1.5, output: 12 });
 	});
 
 	it("refuses to guess when resellers disagree", () => {

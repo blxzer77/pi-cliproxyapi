@@ -102,6 +102,12 @@ export const MODELS_DEV_PROVIDERS: Record<string, unknown> = {
 			"deepseek-v4.1-flash": { cost: { input: 0.28, output: 0.42 } },
 		},
 	},
+	// The billable base model behind a proxy-only id (see PRICE_ALIASES).
+	google: {
+		models: {
+			"gemini-3.1-pro-preview": { cost: { input: 1.5, output: 12 } },
+		},
+	},
 	// A generic reseller that also sells the deepseek model at a different rate.
 	relayHub: {
 		models: {

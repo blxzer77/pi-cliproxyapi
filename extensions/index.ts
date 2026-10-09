@@ -45,6 +45,26 @@ export { formatElapsed, formatTokens, UsageReporter } from "./usage.ts";
 
 const FAST_STATUS_KEY = "cpa-fast";
 
+/**
+ * What the footer should say, derived from what the pause gate and Fast actually do.
+ *
+ * The pause gate only applies to this provider's requests (`before_provider_request`
+ * returns early for every other provider), so a `paused` label on another provider's
+ * model would claim a gate that does not exist.
+ */
+export function buildStatusLabels(
+	model: { provider: string; id: string } | undefined,
+	fastMode: FastModeController,
+	pauseMode: PauseController,
+	providerId: string,
+): { fast?: "on" | "off"; paused: boolean } {
+	if (!model || model.provider !== providerId) {
+		return { paused: false };
+	}
+	const fast = fastMode.stateFor(model.id);
+	return { ...(fast ? { fast } : {}), paused: pauseMode.isEnabled() };
+}
+
 export default async function (pi: ExtensionAPI): Promise<void> {
 	const agentDir = getAgentDir();
 	if (process.env.CLIPROXYAPI_QUIET === "1" || process.env.CLIPROXYAPI_QUIET === "true") {
@@ -52,7 +72,26 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	}
 
 	const identity = resolveIdentity(agentDir);
-	const catalog = new CatalogController(agentDir, identity.providerId);
+	// The connection the provider is currently registered with, so a background pricing
+	// refresh can re-register with the same one.
+	let activeConnection: { baseUrlInput: string; apiKey: string } | undefined;
+	const catalog = new CatalogController(agentDir, identity.providerId, {
+		onCatalogUpdated: () => {
+			fastMode.setSupportedModelIds(catalog.fastModelIds());
+			if (!activeConnection) {
+				return;
+			}
+			registerProvider({
+				pi,
+				agentDir,
+				providerId: identity.providerId,
+				providerName: identity.providerName,
+				baseUrlInput: activeConnection.baseUrlInput,
+				apiKey: activeConnection.apiKey,
+				catalog,
+			});
+		},
+	});
 
 	let fastEnabled = false;
 	try {
@@ -70,7 +109,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	}
 	const pauseMode = new PauseController(pauseEnabled);
 
-	const usage = new UsageReporter({ providerId: identity.providerId, pauseMode });
+	const usage = new UsageReporter({
+		providerId: identity.providerId,
+		pauseMode,
+		isFastEffective: (model) => model.provider === identity.providerId && fastMode.isEffectiveFor(model.id),
+	});
 	usage.register(pi);
 	registerTransientErrorNormalizer(pi, identity.providerId);
 
@@ -102,23 +145,19 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		}
 		try {
 			const model = ctx.model;
-			const labels: string[] = [];
-			if (model && model.provider === identity.providerId) {
-				// A Fast-capable model always says which way the switch is set, so "off" is
-				// distinguishable from "this model has no Fast tier" (which shows nothing).
-				const fastState = fastMode.stateFor(model.id);
-				if (fastState === "on") {
-					labels.push(ctx.ui.theme.fg("warning", "fast on"));
-				} else if (fastState === "off") {
-					labels.push(ctx.ui.theme.fg("dim", "fast off"));
-				}
-				if (pauseMode.isEnabled()) {
-					labels.push(ctx.ui.theme.fg("warning", "paused"));
-				}
-			} else if (pauseMode.isEnabled()) {
-				labels.push(ctx.ui.theme.fg("warning", "paused"));
+			const labels = buildStatusLabels(model, fastMode, pauseMode, identity.providerId);
+			const parts: string[] = [];
+			// A Fast-capable model always says which way the switch is set, so "off" is
+			// distinguishable from "this model has no Fast tier" (which shows nothing).
+			if (labels.fast === "on") {
+				parts.push(ctx.ui.theme.fg("warning", "fast on"));
+			} else if (labels.fast === "off") {
+				parts.push(ctx.ui.theme.fg("dim", "fast off"));
 			}
-			ctx.ui.setStatus(FAST_STATUS_KEY, labels.length > 0 ? labels.join(" ") : undefined);
+			if (labels.paused) {
+				parts.push(ctx.ui.theme.fg("warning", "paused"));
+			}
+			ctx.ui.setStatus(FAST_STATUS_KEY, parts.length > 0 ? parts.join(" ") : undefined);
 		} catch (error) {
 			if (!isStaleContextError(error)) {
 				log.debug("failed to update status", errorMessage(error));
@@ -147,14 +186,16 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		flushNotices(catalog, ctx);
 
 		// Refresh the catalog in the background so startup is not blocked by a slow
-		// proxy, then re-register with the latest list.
+		// proxy, then re-register with the latest list. Pricing is fetched in the
+		// background too: a cold models.dev cache must not delay the first render.
 		const connection = resolveConnection(agentDir, identity.providerId);
 		if (!connection) {
 			return;
 		}
 		try {
-			await catalog.refresh({ allowNetwork: true });
+			await catalog.refresh({ allowNetwork: true, pricing: "background" });
 			fastMode.setSupportedModelIds(catalog.fastModelIds());
+			activeConnection = { baseUrlInput: connection.baseUrlInput, apiKey: connection.apiKey };
 			registerProvider({
 				pi,
 				agentDir,
@@ -175,8 +216,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	});
 
 	const registerConfigured = async (baseUrlInput: string, apiKey: string): Promise<void> => {
-		await catalog.refresh({ allowNetwork: true, force: true });
+		await catalog.refresh({ allowNetwork: true, force: true, pricing: "background" });
 		fastMode.setSupportedModelIds(catalog.fastModelIds());
+		activeConnection = { baseUrlInput, apiKey };
 		registerProvider({
 			pi,
 			agentDir,
@@ -211,13 +253,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	}
 
 	// Populate the catalog before the first registration so the model picker is
-	// correct on the very first render.
+	// correct on the very first render. Pricing is fetched in the background: a cold
+	// models.dev cache must not delay startup.
 	try {
-		await catalog.refresh({ allowNetwork: true });
+		await catalog.refresh({ allowNetwork: true, pricing: "background" });
 	} catch (error) {
 		log.warn(`initial catalog load failed: ${errorMessage(error)}`);
 	}
 	fastMode.setSupportedModelIds(catalog.fastModelIds());
+	activeConnection = { baseUrlInput: connection.baseUrlInput, apiKey: connection.apiKey };
 
 	registerProvider({
 		pi,

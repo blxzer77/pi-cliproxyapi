@@ -21,6 +21,13 @@ export const AUTH_FILE_NAME = "auth.json";
 export const CLIENT_VERSION = "pi";
 
 export const MODELS_REQUEST_TIMEOUT_MS = 60_000;
+/**
+ * Minimum spacing between network catalog fetches. Several triggers can fire within
+ * seconds of each other (extension load, pi's own model refresh, `session_start`),
+ * and a catalog that does not change that fast does not need one fetch per trigger.
+ * An explicit `force` (`/cpa-refresh`, login) bypasses this.
+ */
+export const CATALOG_MIN_REFRESH_MS = 15_000;
 /** Keep API-key credentials effectively permanent; reconfigure via /login. */
 export const CREDENTIAL_TTL_MS = 100 * 365 * 24 * 60 * 60 * 1000;
 
@@ -39,8 +46,6 @@ export interface ConfigFile {
 	pause?: boolean;
 	/** Override the override-file location. Absolute path, or relative to the agent dir. */
 	overridesFile?: string;
-	/** Persisted model ids the user pinned in the model picker. */
-	pinned?: string[];
 }
 
 export interface ResolvedIdentity {
@@ -212,6 +217,25 @@ export function resolveFastDefault(agentDir: string): boolean {
 		"fast",
 		false,
 	);
+}
+
+/**
+ * Minimum spacing between catalog fetches: env CLIPROXYAPI_CATALOG_MIN_REFRESH_MS >
+ * default. An invalid value warns once and falls back rather than blocking refreshes.
+ */
+export function resolveCatalogMinRefreshMs(): number {
+	const raw = process.env.CLIPROXYAPI_CATALOG_MIN_REFRESH_MS?.trim();
+	if (!raw) {
+		return CATALOG_MIN_REFRESH_MS;
+	}
+	const parsed = Number(raw);
+	if (!Number.isFinite(parsed) || parsed < 0) {
+		console.warn(
+			`[pi-cliproxyapi] CLIPROXYAPI_CATALOG_MIN_REFRESH_MS must be a non-negative number of milliseconds; using ${CATALOG_MIN_REFRESH_MS}`,
+		);
+		return CATALOG_MIN_REFRESH_MS;
+	}
+	return parsed;
 }
 
 /** Pause preference: env CLIPROXYAPI_PAUSE > config `pause` > false. */

@@ -229,8 +229,6 @@ function resolveThinkingLevelMap(levels: string[], override: ModelOverride | und
 export interface MapOptions {
 	overrides: CompiledOverrides;
 	costCatalog: CostCatalog;
-	/** Previous catalog, used to carry `unlistedSince` forward. */
-	previous?: Map<string, CatalogModelMeta>;
 	/** When this fetch happened; injected so tests are deterministic. */
 	now?: number;
 }
@@ -284,14 +282,10 @@ export function toCatalogModel(model: CpaModel, options: MapOptions): CatalogMod
 	const matched = matchCost(override?.pricingModelId ?? id, costCatalog, { override: overrideCost, fast: false });
 	const cost = matched;
 
-	const previous = options.previous?.get(id);
-	const listing: ModelListing = override?.hidden
-		? "hidden"
-		: override?.pin
-			? "pinned"
-			: previous?.listing === "unlisted"
-				? "unlisted"
-				: "listed";
+	// This entry came from the current fetch, so a model the previous state had
+	// marked unlisted is listed again: only `reconcileCatalog` may retain or drop
+	// entries, and only for models the fresh fetch does not contain.
+	const listing: ModelListing = override?.hidden ? "hidden" : override?.pin ? "pinned" : "listed";
 
 	const extras: Record<string, unknown> = {};
 	for (const field of EXTRA_FIELDS) {
@@ -414,13 +408,4 @@ export function reconcileCatalog(
 	}
 
 	return { models: [...fresh, ...retained], retained, dropped };
-}
-
-/** Catalog ids whose current or default status deserves a single notification. */
-export function droppedModelsInUse(
-	dropped: string[],
-	currentModelId: string | undefined,
-	defaultModelId: string | undefined,
-): string[] {
-	return dropped.filter((id) => id === currentModelId || id === defaultModelId);
 }

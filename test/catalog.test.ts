@@ -192,6 +192,39 @@ describe("reconcileCatalog", () => {
 		expect(result.retained).toEqual([]);
 	});
 
+	it("marks a model listed again after a drop as listed, not unlisted", () => {
+		// space-bunny vanished, was retained as unlisted, and is now back in the catalog.
+		const dropped = reconcileCatalog(
+			mapCatalog([CODEX_MODEL], { overrides, costCatalog: emptyCostCatalog(), now }),
+			previous(),
+			overrides,
+			now + 60_000,
+			now,
+		);
+		const recovered = dropped.models.find((model) => model.meta.id === "space-bunny");
+		expect(recovered?.meta.listing).toBe("unlisted");
+		expect(recovered?.meta.unlistedSince).toBe(now);
+
+		// The next fetch lists it again: the fresh mapping must clear both flags, and the
+		// grace period must be measured from this fetch if it ever disappears again.
+		const back = reconcileCatalog(
+			mapCatalog([CODEX_MODEL, RELAY_MODEL, LEGACY_LIMIT_MODEL], {
+				overrides,
+				costCatalog: emptyCostCatalog(),
+				now: now + 120_000,
+			}),
+			dropped.models,
+			overrides,
+			now + 120_000,
+			now + 60_000,
+		);
+		const relisted = back.models.find((model) => model.meta.id === "space-bunny");
+		expect(relisted?.meta.listing).toBe("listed");
+		expect(relisted?.meta.listed).toBe(true);
+		expect(relisted?.meta.unlistedSince).toBeUndefined();
+		expect(back.retained).toEqual([]);
+	});
+
 	it("retains a model inside the grace period as unlisted", () => {
 		const fresh = mapCatalog([CODEX_MODEL], { overrides, costCatalog: emptyCostCatalog(), now });
 		const result = reconcileCatalog(fresh, previous(), overrides, now);
