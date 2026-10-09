@@ -21,13 +21,15 @@ From [GitHub Packages](https://github.com/blxzer77/pi-cliproxyapi/pkgs/npm/pi-cl
 pi install npm:@blxzer77/pi-cliproxyapi
 ```
 
-GitHub Packages requires a token even for a public package, so this path needs a registry entry and a token with `read:packages`:
+GitHub Packages requires a token even for a public package, so this path needs registry and token entries. Point **only the scope** at GitHub Packages — setting a global `registry` makes npm look for `@earendil-works/pi-ai` there too, and it only exists on npmjs:
 
 ```ini
 # ~/.npmrc
 @blxzer77:registry=https://npm.pkg.github.com
 //npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
 ```
+
+The token needs `read:packages`. A classic `gh` token carrying `write:packages` also covers reads, so `//npm.pkg.github.com/:_authToken=$(gh auth token)` works.
 
 ## Configure
 
@@ -200,7 +202,7 @@ It trades the Codex WebSocket transport away for the Responses transport. Verifi
 
 ## Status
 
-Usable and covered by 111 tests, but young: the overrides schema and the catalog cache schema can still change, and a cache version mismatch discards the file, costing one refresh.
+Published as `@blxzer77/pi-cliproxyapi@0.1.0` on GitHub Packages, with CI on Node 22.19.0 and 24.x. Usable and covered by 113 tests, but young: the overrides schema and the catalog cache schema can still change, and a cache version mismatch discards the file, costing one refresh.
 
 Requirements: pi `>=1.0.0`, Node `>=22.19.0`.
 
