@@ -92,11 +92,11 @@ This is the reason the provider exists. The catalog at `GET /v1/models?client_ve
       "contextWindow": 1000000,
       "maxTokens": 384000,
       "pin": true,
-      "thinkingLevels": ["low", "high"]
+      "thinkingLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
     },
-    "space-bunny": {
-      "contextWindow": 1048576,
-      "maxTokens": 524288,
+    "my-local-model": {
+      "contextWindow": 131072,
+      "maxTokens": 32768,
       "pin": true,
       "cost": { "input": 0.5, "output": 2 }
     }
@@ -128,7 +128,7 @@ Precedence is `models[id]` → last matching entry of `patterns` → catalog val
 | `name` | Display name in the picker. |
 | `contextWindow`, `maxTokens` | Absolute limits, in tokens. |
 | `reasoning` | Force the reasoning flag. |
-| `thinkingLevels` | pi thinking levels the model actually accepts. Other levels are hidden. |
+| `thinkingLevels` | The levels the upstream actually accepts, by name. Levels not listed are hidden. Include `none` to expose pi's *off* (sent as `reasoning.effort: "none"`); leave it out when the upstream cannot disable reasoning and *off* is hidden. |
 | `thinkingLevelMap` | Raw escape hatch mapping pi levels to provider values (`null` = unsupported). |
 | `input` | `["text"]`, `["text","image"]`, etc. |
 | `cost` | USD per million tokens: `input`, `output`, `cacheRead`, `cacheWrite`, optional `tiers[]`. |
@@ -165,7 +165,7 @@ Throughput is output tokens over the generation window — first upstream event 
 
 - A summary appears when a run settles: `1m 4s • ttft 0.82s • out 1.2k • in 34.5k • cache r 512.0k • 18.4 tok/s • ~$0.0142`
 - `/cpa-usage` shows session totals and the last run.
-- The footer shows `fast` and `paused` labels while they apply.
+- The footer shows `fast on` or `fast off` on a Fast-capable model, and `paused` while requests are gated. `/fast`, `/pause` and `/continue` redraw it immediately.
 
 ## Commands
 
@@ -179,7 +179,14 @@ Throughput is output tokens over the generation window — first upstream event 
 | `/fast` | Toggle OpenAI priority processing. |
 | `/pause`, `/continue` | Gate provider requests, persisted across restarts. |
 
-Fast is off by default: priority processing bills at a higher rate. It only changes the request for models whose catalog entry advertises a non-empty `service_tiers` array; the other models are left untouched and `/fast` says so.
+Fast is off by default: priority processing bills at a higher rate. It only changes the request for models whose catalog entry advertises a non-empty `service_tiers` array; the other models are left untouched, show no Fast label, and `/fast` says so.
+
+## Working with CLIProxyAPI
+
+Two things in the proxy's own config decide whether a model feels right in pi. Both were hit against a live deployment.
+
+- **Thinking levels have no effect.** A catch-all `requests.payload.override` rule that sets `reasoning.effort` pins every request to one value, whatever the picker says. Use a `default` rule scoped to specific upstream models instead, and declare `thinking.levels` on the model so the catalog advertises the ladder the upstream really supports. Check it with `/cpa-models` or by sending each level and reading the effort echoed in `response.created`.
+- **Upstream rejects the request for a missing session header.** Some upstreams (OpenCode Go, for one) answer HTTP 400 `MissingSessionID` without an `x-opencode-session` header. A header the client sends is not forwarded, so map one in the proxy's provider `headers`: `x-opencode-session: "$session_id"`. pi sends `session_id` whenever prompt caching is on, so each pi session gets its own upstream session. With `PI_CACHE_RETENTION=none` pi sends none and the request fails again.
 
 ## Differences from the upstream provider
 
@@ -198,11 +205,11 @@ This provider instead uses pi-ai's built-in `openai-responses` implementation ag
 | Pinned models impossible; missing models hidden for 7 days and warned about repeatedly | Explicit `pinned` / `unlisted` state persisted across restarts |
 | Monkeys patched footer, local TPS guess | Official status row; TPS over the generation window |
 
-It trades the Codex WebSocket transport away for the Responses transport. Verified working against a live proxy: catalog discovery, plain responses, tool calls and tool-result round-trips, exact usage, and Fast payload injection. Not verified here: image input, abort behaviour, context overflow, and WebSocket-only proxies.
+It trades the Codex WebSocket transport away for the Responses transport. Verified working against a live proxy: catalog discovery, plain responses, tool calls and tool-result round-trips, exact usage, and Fast payload injection. Models the catalog marks `prefer_websockets: true` also work over this transport. Not verified here: image input, abort behaviour, context overflow, and WebSocket-only proxies.
 
 ## Status
 
-Published as `@blxzer77/pi-cliproxyapi@0.1.0` on GitHub Packages, with CI on Node 22.19.0 and 24.x. Usable and covered by 113 tests, but young: the overrides schema and the catalog cache schema can still change, and a cache version mismatch discards the file, costing one refresh.
+Published as `@blxzer77/pi-cliproxyapi@0.1.0` on GitHub Packages, with CI on Node 22.19.0 and 24.x. Usable and covered by 120 tests, but young: the overrides schema and the catalog cache schema can still change, and a cache version mismatch discards the file, costing one refresh.
 
 Requirements: pi `>=1.0.0`, Node `>=22.19.0`.
 

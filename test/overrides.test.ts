@@ -174,6 +174,19 @@ describe("buildThinkingLevelMap", () => {
 		expect(buildThinkingLevelMap(["none", "low"])?.off).toBe("none");
 	});
 
+	it("expresses a full upstream ladder: none is off, ultra stays unsupported", () => {
+		expect(buildThinkingLevelMap(["none", "minimal", "low", "medium", "high", "xhigh", "max"])).toEqual({
+			off: "none",
+			minimal: "minimal",
+			low: "low",
+			medium: "medium",
+			high: "high",
+			xhigh: "xhigh",
+			max: "max",
+			ultra: null,
+		});
+	});
+
 	it("returns undefined for an empty list so the model keeps pi's default", () => {
 		expect(buildThinkingLevelMap([])).toBeUndefined();
 	});
