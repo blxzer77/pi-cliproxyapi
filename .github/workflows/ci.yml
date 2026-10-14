@@ -16,7 +16,13 @@ concurrency:
 jobs:
   check:
     name: check (node ${{ matrix.node }})
-    runs-on: [self-hosted, Linux, X64, repo-pi-cliproxyapi]
+    # Linux/x64 jobs run on the self-hosted nyan-dev-01 runner. A pull request
+    # whose code comes from another repository falls back to a GitHub-hosted
+    # runner: the self-hosted runner users hold NOPASSWD sudo and the docker
+    # group, so untrusted fork code must not execute there. Compare repository
+    # names rather than head.repo.fork, which is true for every PR while this
+    # repository is itself a fork of an upstream project.
+    runs-on: ${{ ((github.event_name == 'pull_request') && (github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || fromJSON('["self-hosted","Linux","X64","repo-pi-cliproxyapi"]') }}
     strategy:
       fail-fast: false
       matrix:
